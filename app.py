@@ -6,11 +6,9 @@ st.set_page_config(layout="wide", page_title="Chatbot Finanzas")
 # *
 st.markdown("""
 <style>
-    # *Oculta la barra superior de Streamlit 
+
     header {visibility: hidden;}
-    # *Oculta el pie de página "Made with Streamlit" 
     footer {visibility: hidden;}
-    # *Elimina los espacios/márgenes internos de la página
     .block-container {
         padding-top: 0rem !important;
         padding-bottom: 0rem !important;
