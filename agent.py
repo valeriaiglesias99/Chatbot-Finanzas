@@ -1,39 +1,26 @@
 import io
+import re
 import streamlit as st
 import contextlib
 from datetime import datetime
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+import google.generativeai as genai
 
-from config import (
-    GOOGLE_API_KEY,
-    LLM_MODEL,
-    LLM_TEMPERATURE,
-    LLM_MAX_TOKENS,
-)
+from config import GOOGLE_API_KEY, LLM_MODEL, LLM_TEMPERATURE, LLM_MAX_TOKENS
 from data import data_limpia
 from prompts import SYSTEM_PROMPT
 
 
+#Cargar el df y cachearlo
 @st.cache_data
 def cargar_data():
     return data_limpia()
 
 
-@st.cache_resource
-def cargar_llm():
-    return ChatGoogleGenerativeAI(
-        model=LLM_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=LLM_TEMPERATURE,
-        max_output_tokens=LLM_MAX_TOKENS,
-    )
-
-
 def _ejecutar_codigo(codigo: str) -> str:
-    """Ejecuta código Python sobre el df y retorna el output impreso."""
+    """Ejecuta código Python sobre el df y retorna el output."""
     df = cargar_data()
+    # buffer de texto en memoria para capturar el output de print()
     buffer = io.StringIO()
     try:
         with contextlib.redirect_stdout(buffer):
@@ -41,84 +28,134 @@ def _ejecutar_codigo(codigo: str) -> str:
         resultado = buffer.getvalue()
         return resultado if resultado.strip() else "Código ejecutado sin output."
     except Exception as e:
-        return f"Error al ejecutar el código: {e}"
+        return f"Error: {e}"
 
-def _content_a_str(content) -> str:
-    """Convierte el content de Gemini a string sin importar el formato."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            item.get("text", "") if isinstance(item, dict) else str(item)
-            for item in content
+
+def _extraer_texto(respuesta) -> str:
+    """Extrae texto plano de una respuesta de Gemini."""
+    texto = ""
+    for part in respuesta.parts:
+        if hasattr(part, "text") and part.text:
+            texto += part.text
+    return texto.strip()
+
+
+def _extraer_function_call(respuesta):
+    """Extrae el function_call de una respuesta de Gemini si existe."""
+    for part in respuesta.parts:
+        if hasattr(part, "function_call") and part.function_call.name:
+            return part.function_call
+    return None
+
+
+TOOL_EJECUTAR_PYTHON = genai.protos.Tool(
+    function_declarations=[
+        genai.protos.FunctionDeclaration(
+            name="ejecutar_python",
+            description=(
+                "Ejecuta código Python sobre el DataFrame de facturación llamado df. "
+                "Usa print() para mostrar resultados. "
+                "SIEMPRE usa esta herramienta para calcular datos."
+            ),
+            parameters=genai.protos.Schema(
+                type=genai.protos.Type.OBJECT,
+                properties={
+                    "codigo": genai.protos.Schema(
+                        type=genai.protos.Type.STRING,
+                        description="Código Python. El DataFrame se llama df. Usa print() para mostrar resultados.",
+                    )
+                },
+                required=["codigo"],
+            ),
         )
-    return str(content)
+    ]
+)
 
-# Definición de la herramienta para bind_tools
-TOOLS = [
-    {
-        "name": "ejecutar_python",
-        "description": (
-            "Ejecuta código Python sobre el DataFrame de facturación llamado `df`. "
-            "Usa print() para mostrar los resultados. "
-            "Úsala cuando necesites calcular, filtrar o analizar datos del df."
+
+@st.cache_resource
+def cargar_modelo():
+    genai.configure(api_key=GOOGLE_API_KEY)
+    return genai.GenerativeModel(
+        model_name=LLM_MODEL,
+        tools=[TOOL_EJECUTAR_PYTHON],
+        tool_config={"function_calling_config": {"mode": "AUTO"}},  # ← agregar esto
+        generation_config=genai.GenerationConfig(
+            temperature=LLM_TEMPERATURE,
+            max_output_tokens=LLM_MAX_TOKENS,
         ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "codigo": {
-                    "type": "string",
-                    "description": (
-                        "Código Python válido. El DataFrame se llama `df`. "
-                        "Usa print() para mostrar resultados."
-                    ),
-                }
-            },
-            "required": ["codigo"],
-        },
-    }
-]
+        system_instruction=(
+            "CRÍTICO: NUNCA respondas con bloques ```python``` ni escribas código como texto. "
+            "SIEMPRE usa la herramienta ejecutar_python para ejecutar código. "
+            "Escribir código como texto no ejecuta nada y no sirve."
+        ),
+    )
 
 
 def invocar_agente(pregunta_con_contexto: str) -> str:
-    """
-    Invoca el modelo con tool calling.
-    - Si la pregunta requiere datos: ejecuta código y redacta respuesta con el resultado.
-    - Si es saludo o pregunta simple: responde directo sin ejecutar código.
-    """
     hoy = datetime.now().strftime("%d/%m/%Y")
     año = datetime.now().year
+    prompt_completo = f"Hoy es {hoy}. Año actual: {año}.\nCuando digan 'este año' usa {año}.\n\n{SYSTEM_PROMPT}\n\nPregunta: {pregunta_con_contexto}"
 
-    llm = cargar_llm()
-    llm_con_tools = llm.bind_tools(TOOLS)
+    modelo = cargar_modelo()
+    chat = modelo.start_chat(history=[])
+    respuesta = chat.send_message(prompt_completo)
 
-    system_prompt = f"Hoy es {hoy}. Año actual: {año}.\nCuando digan 'este año' usa {año}.\n\n{SYSTEM_PROMPT}"
+    for _ in range(5):
+        try:
+            function_call = _extraer_function_call(respuesta)
+        except Exception:
+            # MALFORMED_FUNCTION_CALL — reintentar
+            respuesta = chat.send_message(
+                "Hubo un error en el formato. Por favor intenta de nuevo usando ejecutar_python."
+            )
+            continue
 
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=pregunta_con_contexto),
-    ]
+        if function_call is None:
+            texto = _extraer_texto(respuesta)
+            print(f">>> RESPUESTA DIRECTA: {texto[:300]}")
 
-    # Primera llamada — modelo decide si usar herramienta o responder directo
-    respuesta = llm_con_tools.invoke(messages)
+            # Detectar código escrito como texto en lugar de usar la herramienta
+            match = re.search(r'```python\n(.*?)```', texto, re.DOTALL)
+            if not match:
+                match = re.search(r'ejecutar_python\s*(.*?)(?:\n\n|$)', texto, re.DOTALL)
 
-    # Si no necesita código (saludo, pregunta simple, fuera de contexto)
-    if not respuesta.tool_calls:
-        return _content_a_str(respuesta.content)
+            if match:
+                codigo = match.group(1).strip()
+                print(f">>> CÓDIGO EN TEXTO DETECTADO, ejecutando...")
+                resultado = _ejecutar_codigo(codigo)
+                respuesta = chat.send_message(
+                    f"Resultado del código:\n{resultado}\n\nRedacta la respuesta final en español con estos datos."
+                )
+                continue
 
-    # Ejecutar el código solicitado por el modelo
-    tool_call = respuesta.tool_calls[0]
-    codigo = tool_call["args"]["codigo"]
-    resultado = _ejecutar_codigo(codigo)
+            # Respuesta vacía — forzar reintento
+            if not texto:
+                respuesta = chat.send_message(
+                    "Por favor usa la herramienta ejecutar_python para responder la pregunta."
+                )
+                continue
 
-    # Segunda llamada — modelo redacta la respuesta final con el resultado real
-    messages.append(respuesta)
-    messages.append(
-        ToolMessage(
-            content=resultado,
-            tool_call_id=tool_call["id"],
+            return texto
+
+        # Ejecutar la herramienta
+        codigo = function_call.args.get("codigo", "")
+        resultado = _ejecutar_codigo(codigo)
+        print(f">>> TOOL CALL:\n{codigo}")
+        print(f">>> RESULTADO: {resultado[:200]}")
+
+        respuesta = chat.send_message(
+            genai.protos.Content(
+                parts=[
+                    genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name="ejecutar_python",
+                            response={"result": resultado},
+                        )
+                    )
+                ]
+            )
         )
-    )
 
-    respuesta_final = llm.invoke(messages)
-    return _content_a_str(respuesta_final.content)
+    texto_final = _extraer_texto(respuesta)
+    print(f">>> RESPUESTA FINAL: {texto_final[:300]}")
+    return texto_final if texto_final else "No pude procesar la pregunta. ¿Puedes reformularla?"

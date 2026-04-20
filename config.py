@@ -7,8 +7,8 @@ load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
  
 # LLM
-LLM_MODEL = "gemini-2.5-flash"
-LLM_TEMPERATURE = 0
+LLM_MODEL = "gemini-3.1-pro-preview-customtools"
+LLM_TEMPERATURE = 0.2
 LLM_MAX_TOKENS = 16384
  
 # Agente

@@ -14,21 +14,39 @@ def manejar_error(error: Exception) -> str:
  
  
 def limpiar_mensaje_para_historial(contenido: str) -> str:
-    """Elimina tablas markdown de un mensaje para aligerar el contexto."""
-    sin_tabla = re.sub(r'\|.+\|', '', contenido)
-    return re.sub(r'\n{2,}', '\n', sin_tabla).strip()
+    import re
+    # Extraer clientes de la tabla
+    clientes = re.findall(r'\|\s*([A-Za-záéíóúÁÉÍÓÚñÑ][^|$\n]+?)\s*\|\s*\$', contenido)
+    clientes = [c.strip() for c in clientes if c.strip()]
+
+    # Extraer período mencionado
+    periodo = ""
+    match = re.search(r'(enero|febrero|marzo|abril).+?(202\d)', contenido, re.IGNORECASE)
+    if match:
+        periodo = match.group(0)
+
+    # Quitar tablas
+    sin_tabla = re.sub(r'(\|.+\|\n?)+', '', contenido)
+    sin_tabla = re.sub(r'\n{2,}', '\n', sin_tabla).strip()
+
+    # Agregar resumen útil
+    if clientes:
+        sin_tabla += f"\n[Clientes: {', '.join(clientes[:5])}]"
+    if periodo:
+        sin_tabla += f"\n[Período: {periodo}]"
+
+    return sin_tabla
  
  
 def construir_contexto(historial_mensajes: list, n: int) -> str:
-    """
-    Construye un string de contexto a partir de los últimos n mensajes
-    del historial de LangChain.
-    """
     contexto = ""
     for msg in historial_mensajes[-n:]:
         if msg.type == "human":
             contexto += f"Usuario: {msg.content}\n\n"
         else:
+            # Omitir mensajes de error del contexto
+            if "No pude procesar" in msg.content:
+                continue
             sin_tabla = limpiar_mensaje_para_historial(msg.content)
             contexto += f"Asistente: {sin_tabla}\n\n"
     return contexto

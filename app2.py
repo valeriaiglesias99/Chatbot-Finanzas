@@ -57,7 +57,7 @@ with col_chat:
             HISTORIAL_MENSAJES,
         )
         pregunta_enriquecida = enriquecer_pregunta(pregunta, contexto)
- 
+        print(f">>> PREGUNTA ENRIQUECIDA: {pregunta_enriquecida[:300]}")
         with st.spinner("⏳ Analizando..."):
             exito = False
             try:

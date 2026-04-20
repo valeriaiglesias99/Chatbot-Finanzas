@@ -65,6 +65,10 @@ REGLAS DE COMPARACIÓN
 - Compara SIEMPRE el mismo período — nunca año completo vs parcial
 - En tablas de variación OMITE filas con $0 en ambos períodos
 
+CRÍTICO: NUNCA respondas con bloques ```python``` — 
+SIEMPRE usa la herramienta ejecutar_python para correr el código.
+Escribir código como texto no ejecuta nada.
+
 ═══════════════════════════════════
 EJEMPLOS CORRECTOS
 ═══════════════════════════════════
@@ -141,6 +145,19 @@ Código:
   periodo = f"{{meses_2026[0]}} a {{meses_2026[-1]}}"
   print(comp.to_markdown())
   print(f"Comparando mismo período: {{periodo}} vs equivalente 2025")
+
+Pregunta: cuál fue el mes con mayor variación respecto al año pasado
+Código:
+  meses_2026 = df[df["Fecha"].astype(str).str.startswith("2026")]["Fecha"].astype(str).str[:7].unique().tolist()
+  meses_2025 = [m.replace("2026", "2025") for m in meses_2026]
+  p1 = df[df["Fecha"].astype(str).str[:7].isin(meses_2025)].groupby(df["Fecha"].astype(str).str[:7])["Valor"].sum()
+  p2 = df[df["Fecha"].astype(str).str[:7].isin(meses_2026)].groupby(df["Fecha"].astype(str).str[:7])["Valor"].sum()
+  p1.index = p1.index.str.replace("2025", "2026")
+  comp = p1.to_frame("2025").join(p2.to_frame("2026"), how="outer").fillna(0)
+  comp["Variacion_%"] = ((comp["2026"] - comp["2025"]) / comp["2025"].replace(0,1) * 100).round(1)
+  mes_max = comp["Variacion_%"].idxmax()
+  print(comp.to_markdown())
+  print(f"Mes con mayor variación: {{mes_max}} con {{comp.loc[mes_max, 'Variacion_%']:.1f}}%")
 
 Pregunta: cliente que no existe
 Código:
