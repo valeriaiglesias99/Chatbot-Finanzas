@@ -247,14 +247,14 @@ with col_chat:
                 agent = crear_agente()
                 resultado = agent.invoke({"input": pregunta_con_memoria})
                 output = resultado["output"]
-
-                if isinstance(output, list):
-                    respuesta = "".join([
+                if isinstance(respuesta, list):
+                    respuesta = " ".join([
                         item.get("text", "") if isinstance(item, dict) else str(item)
-                        for item in output
+                        for item in respuesta
                     ])
-                else:
-                    respuesta = str(output)
+
+                if not respuesta.strip():
+                    respuesta = "No pude procesar la pregunta. ¿Puedes reformularla?"
 
             except Exception as e:
                 error_texto = str(e)

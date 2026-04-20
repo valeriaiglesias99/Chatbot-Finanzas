@@ -1,21 +1,26 @@
+import io
 import streamlit as st
+import contextlib
 from datetime import datetime
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_experimental.agents import create_pandas_dataframe_agent
 
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 
 from config import (
     GOOGLE_API_KEY,
     LLM_MODEL,
     LLM_TEMPERATURE,
     LLM_MAX_TOKENS,
-    AGENT_MAX_ITERATIONS,
-    AGENT_MAX_EXECUTION_TIME,
 )
 from data import data_limpia
 from prompts import SYSTEM_PROMPT
- 
- 
+
+
+@st.cache_data
+def cargar_data():
+    return data_limpia()
+
+
 @st.cache_resource
 def cargar_llm():
     return ChatGoogleGenerativeAI(
@@ -24,73 +29,96 @@ def cargar_llm():
         temperature=LLM_TEMPERATURE,
         max_output_tokens=LLM_MAX_TOKENS,
     )
- 
- 
-@st.cache_data
-def cargar_data():
-    return data_limpia()
- 
-@st.cache_resource(ttl=1)
-def cargar_agente():
-    """Crea y cachea el agente para no recrearlo en cada mensaje."""
+
+
+def _ejecutar_codigo(codigo: str) -> str:
+    """Ejecuta código Python sobre el df y retorna el output impreso."""
+    df = cargar_data()
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buffer):
+            exec(codigo, {"df": df})  # noqa: S102
+        resultado = buffer.getvalue()
+        return resultado if resultado.strip() else "Código ejecutado sin output."
+    except Exception as e:
+        return f"Error al ejecutar el código: {e}"
+
+def _content_a_str(content) -> str:
+    """Convierte el content de Gemini a string sin importar el formato."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            item.get("text", "") if isinstance(item, dict) else str(item)
+            for item in content
+        )
+    return str(content)
+
+# Definición de la herramienta para bind_tools
+TOOLS = [
+    {
+        "name": "ejecutar_python",
+        "description": (
+            "Ejecuta código Python sobre el DataFrame de facturación llamado `df`. "
+            "Usa print() para mostrar los resultados. "
+            "Úsala cuando necesites calcular, filtrar o analizar datos del df."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "codigo": {
+                    "type": "string",
+                    "description": (
+                        "Código Python válido. El DataFrame se llama `df`. "
+                        "Usa print() para mostrar resultados."
+                    ),
+                }
+            },
+            "required": ["codigo"],
+        },
+    }
+]
+
+
+def invocar_agente(pregunta_con_contexto: str) -> str:
+    """
+    Invoca el modelo con tool calling.
+    - Si la pregunta requiere datos: ejecuta código y redacta respuesta con el resultado.
+    - Si es saludo o pregunta simple: responde directo sin ejecutar código.
+    """
     hoy = datetime.now().strftime("%d/%m/%Y")
     año = datetime.now().year
-    fecha_header = f"""
-        Hoy es {hoy}. Año actual: {año}.
-        Cuando digan "este año" usa {año}.
 
-        INSTRUCCIONES DE FORMATO — MUY IMPORTANTE:
-        Siempre debes responder usando este formato exacto:
+    llm = cargar_llm()
+    llm_con_tools = llm.bind_tools(TOOLS)
 
-        Thought: [tu razonamiento]
-        Action: python_repl_ast
-        Action Input: [el código python]
+    system_prompt = f"Hoy es {hoy}. Año actual: {año}.\nCuando digan 'este año' usa {año}.\n\n{SYSTEM_PROMPT}"
 
-        O si no necesitas ejecutar código:
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=pregunta_con_contexto),
+    ]
 
-        Thought: [tu razonamiento]
-        Final Answer: [tu respuesta]
+    # Primera llamada — modelo decide si usar herramienta o responder directo
+    respuesta = llm_con_tools.invoke(messages)
 
-        NUNCA respondas directamente sin usar Thought/Action o Thought/Final Answer.
-    """
+    # Si no necesita código (saludo, pregunta simple, fuera de contexto)
+    if not respuesta.tool_calls:
+        return _content_a_str(respuesta.content)
 
-    prompt_con_fecha = fecha_header + SYSTEM_PROMPT
-    agente = create_pandas_dataframe_agent(
-        cargar_llm(),
-        cargar_data(),
-        verbose=True,
-        prefix=prompt_con_fecha,
-        allow_dangerous_code=True,
-        max_iterations=AGENT_MAX_ITERATIONS,
-        max_execution_time=AGENT_MAX_EXECUTION_TIME,
+    # Ejecutar el código solicitado por el modelo
+    tool_call = respuesta.tool_calls[0]
+    codigo = tool_call["args"]["codigo"]
+    resultado = _ejecutar_codigo(codigo)
+
+    # Segunda llamada — modelo redacta la respuesta final con el resultado real
+    messages.append(respuesta)
+    messages.append(
+        ToolMessage(
+            content=resultado,
+            tool_call_id=tool_call["id"],
+        )
     )
-    
-    # Envolver en AgentExecutor con handle_parsing_errors
-    agente.handle_parsing_errors = True
-    return agente
- 
 
-import time
-
-def invocar_agente(pregunta_con_contexto: str, max_reintentos: int = 3) -> str:
-    agente = cargar_agente()
-    
-    for intento in range(max_reintentos):
-        try:
-            resultado = agente.invoke({"input": pregunta_con_contexto})
-            output = resultado["output"]
-            if isinstance(output, list):
-                return "".join(
-                    item.get("text", "") if isinstance(item, dict) else str(item)
-                    for item in output
-                )
-            return str(output)
-            
-        except Exception as e:
-            if "503" in str(e) or "UNAVAILABLE" in str(e):
-                if intento < max_reintentos - 1:
-                    time.sleep(5)  # espera 5 segundos y reintenta
-                    continue
-            raise e  # si no es 503, lanza el error normal
-    
-    return "El servicio está experimentando alta demanda. Intenta en unos segundos."
+    respuesta_final = llm.invoke(messages)
+    return _content_a_str(respuesta_final.content)

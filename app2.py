@@ -30,7 +30,7 @@ if "chat_history" not in st.session_state:
 # Layout: tablero izquierda | chatbot derecha
 # ---------------------------------------------------------------------------
 col_pbi, col_chat = st.columns([2, 1])
-
+ 
 with col_pbi:
     st.components.v1.iframe(
         src=POWERBI_URL,
@@ -38,40 +38,50 @@ with col_pbi:
         height=POWERBI_HEIGHT,
         scrolling=True,
     )
-
+ 
 with col_chat:
     st.subheader("🤖 Asistente")
-
+ 
     st.session_state.scroll_counter += 1
     chat_html = build_chat_html(st.session_state.messages)
     widget_html = render_chat_widget(chat_html, st.session_state.scroll_counter)
-
+ 
     st.components.v1.html(widget_html, height=750, scrolling=False)
-
+ 
     pregunta = st.chat_input("Pregunta algo...")
     if pregunta:
         st.session_state.messages.append({"role": "user", "content": pregunta})
-
+ 
         contexto = construir_contexto(
             st.session_state.chat_history.messages,
             HISTORIAL_MENSAJES,
         )
         pregunta_enriquecida = enriquecer_pregunta(pregunta, contexto)
-
+ 
         with st.spinner("⏳ Analizando..."):
+            exito = False
             try:
                 respuesta = invocar_agente(pregunta_enriquecida)
-                # Solo guardar si fue exitoso
-                st.session_state.chat_history.add_user_message(pregunta)
-                st.session_state.chat_history.add_ai_message(respuesta)
+ 
+                # Normalizar a string si viene como lista
+                if isinstance(respuesta, list):
+                    respuesta = " ".join(
+                        item.get("text", "") if isinstance(item, dict) else str(item)
+                        for item in respuesta
+                    )
+ 
+                if not respuesta or not respuesta.strip():
+                    respuesta = "No pude procesar la pregunta. ¿Puedes reformularla?"
+ 
+                exito = True
+ 
             except Exception as e:
-                respuesta = str(e)  # ← temporalmente muestra el error real
-        # No se guarda en historial — el contexto queda limpio
-
-        if not respuesta.strip():
-            respuesta = "No pude procesar la pregunta. ¿Puedes reformularla?"
-
-        st.session_state.chat_history.add_user_message(pregunta)
-        st.session_state.chat_history.add_ai_message(respuesta)
+                respuesta = str(e)  # ← temporal
+ 
+        # Solo guardar en historial si la respuesta fue exitosa
+        if exito:
+            st.session_state.chat_history.add_user_message(pregunta)
+            st.session_state.chat_history.add_ai_message(respuesta)
+ 
         st.session_state.messages.append({"role": "assistant", "content": respuesta})
         st.rerun()
