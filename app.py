@@ -1,24 +1,15 @@
+import re
+import os
 import streamlit as st
 from dotenv import load_dotenv
-
-load_dotenv() 
-
-# ← Agrega estas dos líneas
-import langchain
-langchain.debug = False
+load_dotenv()
 
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_experimental.agents import create_pandas_dataframe_agent
+from langchain_community.chat_message_histories import ChatMessageHistory
 from data import data_limpia
 from prompts import SYSTEM_PROMPT
-from langchain_experimental.agents import create_pandas_dataframe_agent
-import os
-from langchain_community.agent_toolkits.load_tools import load_tools
-from langchain_classic.memory import ConversationBufferWindowMemory
 
-
-if "cache_cleared" not in st.session_state:
-    st.cache_resource.clear()
-    st.session_state.cache_cleared = True
 
 # *Configuración inicial de la página, ocupando todo el ancho y título de la pestaña
 st.set_page_config(layout="wide", page_title="Chatbot Finanzas")
@@ -63,32 +54,72 @@ if "messages" not in st.session_state:
 
 
 # Inicializar memoria de LangChain en session_state
-if "memoria" not in st.session_state:
-    st.session_state.memoria = ConversationBufferWindowMemory(
-        k=4,  # ← recuerda solo los últimos 3 intercambios
-        return_messages=True
-    )
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = ChatMessageHistory()
+    
 
 # !Cargar datos y agente una sola vez
 
-def cargar_agente():
-    df = data_limpia()  # ← carga el df aquí adentro
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-flash-lite-latest",
+@st.cache_resource
+def cargar_llm():
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
         google_api_key=os.getenv("GOOGLE_API_KEY"),
         temperature=0,
-        max_output_tokens=4096 
+        max_output_tokens=8192
     )
-    agent = create_pandas_dataframe_agent(
+
+@st.cache_data
+def cargar_data():
+    return data_limpia()
+
+def manejar_error(error) -> str:
+    texto = str(error)
+    if "Could not parse LLM output:" in texto:
+        # Extrae solo el texto útil
+        respuesta = texto.split("Could not parse LLM output:")[1]
+        # Quita todo lo que venga después del backtick final
+        if "For troubleshooting" in respuesta:
+            respuesta = respuesta.split("For troubleshooting")[0]
+        # Limpia backticks y espacios
+        respuesta = respuesta.strip().strip("`").strip()
+        return respuesta
+    return "No pude procesar la respuesta. Intenta reformular la pregunta."
+def crear_agente():
+    from datetime import datetime
+    df = cargar_data()
+    llm = cargar_llm()
+    hoy = datetime.now().strftime("%d/%m/%Y")
+    año = datetime.now().year
+    prompt_con_fecha = f"""
+    Hoy es {hoy}. Año actual: {año}.
+    Cuando digan "este año" usa {año}.
+
+    INSTRUCCIONES DE FORMATO — MUY IMPORTANTE:
+    Siempre debes responder usando este formato exacto:
+
+    Thought: [tu razonamiento]
+    Action: python_repl_ast
+    Action Input: [el código python]
+
+    O si no necesitas ejecutar código:
+
+    Thought: [tu razonamiento]
+    Final Answer: [tu respuesta]
+
+    NUNCA respondas directamente sin usar Thought/Action o Thought/Final Answer.
+
+    {SYSTEM_PROMPT}
+    """
+    return create_pandas_dataframe_agent(
         llm,
         df,
         verbose=True,
-        prefix=SYSTEM_PROMPT,
+        prefix=prompt_con_fecha,
         allow_dangerous_code=True,
-        handle_parsing_errors=True,
-        agent_type="openai-tools"
+        max_iterations=5,
+        max_execution_time=60
     )
-    return agent
 
 # *Chat con diseño personalizado
 def build_chat_html(messages):
@@ -137,10 +168,10 @@ with col_pbi:
     )
 
 # *Chatbot derecha
+# *Chatbot derecha
 with col_chat:
     st.subheader("🤖 Asistente")
 
-    # *HTML  de los mensajes
     chat_html = build_chat_html(st.session_state.messages)
     st.session_state.scroll_counter += 1
 
@@ -153,7 +184,6 @@ with col_chat:
                 padding: 16px;
                 font-family: sans-serif;
             }}
-            /* Estilo de tablas */
             table {{
                 border-collapse: collapse;
                 width: 100%;
@@ -182,40 +212,64 @@ with col_chat:
         </div>
         <script>
             var dummy = {st.session_state.scroll_counter};
-            
-            /* Renderiza markdown en todos los mensajes del asistente */
             document.querySelectorAll('.markdown-content').forEach(function(el) {{
                 el.innerHTML = marked.parse(el.textContent);
             }});
-            
-            /* Auto-scroll */
             var box = document.querySelector('.tutor-chat-box');
             if(box) box.scrollTop = box.scrollHeight;
         </script>
     """, height=750, scrolling=False)
 
-    # Input
     pregunta = st.chat_input("Pregunta algo...")
     if pregunta:
         st.session_state.messages.append({"role": "user", "content": pregunta})
 
-        with st.spinner("Analizando..."):
+        # ← Construye contexto ANTES del try
+        contexto = ""
+        for msg in st.session_state.chat_history.messages[-4:]:
+            if msg.type == "human":
+                contexto += f"Usuario: {msg.content}\n\n"
+            else:
+                sin_tabla = re.sub(r'\|.+\|', '', msg.content)
+                sin_tabla = re.sub(r'\n{2,}', '\n', sin_tabla).strip()
+                contexto += f"Asistente: {sin_tabla}\n\n"
+
+        pregunta_con_memoria = f"""
+    Historial reciente:
+    {contexto}
+    IMPORTANTE: Si es seguimiento ejecuta lo prometido antes.
+    Pregunta actual: {pregunta}
+    """
+
+        with st.spinner("⏳ Analizando..."):
+            respuesta = ""
             try:
-                agent = cargar_agente()
-                resultado = agent.invoke({"input": pregunta})
+                agent = crear_agente()
+                resultado = agent.invoke({"input": pregunta_con_memoria})
                 output = resultado["output"]
-                
-                # Si es lista extrae el texto
+
                 if isinstance(output, list):
-                    respuesta = " ".join([
-                        item["text"] for item in output 
-                        if isinstance(item, dict) and "text" in item
+                    respuesta = "".join([
+                        item.get("text", "") if isinstance(item, dict) else str(item)
+                        for item in output
                     ])
                 else:
                     respuesta = str(output)
-                    
-            except Exception as e:
-                respuesta = f"Ocurrió un error: {str(e)}"
 
+            except Exception as e:
+                error_texto = str(e)
+                if "Could not parse LLM output:" in error_texto:
+                    respuesta = error_texto.split("Could not parse LLM output:")[1]
+                    if "For troubleshooting" in respuesta:
+                        respuesta = respuesta.split("For troubleshooting")[0]
+                    respuesta = respuesta.strip().strip("`").strip()
+                else:
+                    respuesta = f"Ocurrió un error: {error_texto}"
+
+            if not respuesta.strip():
+                respuesta = "No pude procesar la pregunta. ¿Puedes reformularla?"
+
+        st.session_state.chat_history.add_user_message(pregunta)
+        st.session_state.chat_history.add_ai_message(respuesta)
         st.session_state.messages.append({"role": "assistant", "content": respuesta})
         st.rerun()

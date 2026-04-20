@@ -48,11 +48,11 @@ def columnas_finales(df):
     df = df.rename(columns={
         "Fecha Emision  MM DD AAAA": "Fecha",
         "Cliente Ajustado": "Cliente",
-        "Valor": "Valor Bruto"
+        "Valor bruto": "Valor"
     })
     
     # Convertir fecha a solo fecha sin hora
-    df["Fecha"] = pd.to_datetime(df["Fecha"], format="%d/%m/%Y", errors="coerce").dt.date
+    df["Fecha"] = pd.to_datetime(df["Fecha"], format="%d/%m/%Y", errors="coerce").dt.strftime("%Y-%m-%d")
     
     return df
 
