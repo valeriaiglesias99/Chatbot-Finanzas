@@ -19,9 +19,16 @@ if "scroll_counter" not in st.session_state:
     st.session_state.scroll_counter = 0
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Hola! ¿En qué te puedo ayudar hoy?"}
-    ]
+        st.session_state.messages = [{"role": "assistant", "content": """¡Hola! Soy tu asistente financiero de Lucro. Tengo acceso a una base de datos de facturación con la siguiente información para analizar:
+
+        * **Factura:** Número de factura
+        * **Fecha:** Fecha de emisión (en formato YYYY-MM-DD)
+        * **Concepto:** Descripción del servicio o producto facturado
+        * **Cliente:** Nombre del cliente
+        * **Valor:** Valor en pesos colombianos (COP)
+
+        Con estos datos, puedo ayudarte a responder preguntas sobre facturación, como ventas por cliente, facturación mensual, comparaciones entre períodos, y más. ¿Qué te gustaría analizar hoy?"""}
+            ]
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = ChatMessageHistory()
