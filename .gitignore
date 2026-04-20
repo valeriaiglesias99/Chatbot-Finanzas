@@ -1,0 +1,4 @@
+# Claves secretas
+.env
+credentials.json
+secrets.toml

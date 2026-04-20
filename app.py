@@ -13,6 +13,8 @@ from prompts import SYSTEM_PROMPT
 from langchain_experimental.agents import create_pandas_dataframe_agent
 import os
 from langchain_community.agent_toolkits.load_tools import load_tools
+from langchain_classic.memory import ConversationBufferWindowMemory
+
 
 if "cache_cleared" not in st.session_state:
     st.cache_resource.clear()
@@ -59,14 +61,23 @@ if "messages" not in st.session_state:
         {"role": "assistant", "content": "Hola! ¿En qué te puedo ayudar hoy?"}
     ]
 
+
+# Inicializar memoria de LangChain en session_state
+if "memoria" not in st.session_state:
+    st.session_state.memoria = ConversationBufferWindowMemory(
+        k=4,  # ← recuerda solo los últimos 3 intercambios
+        return_messages=True
+    )
+
 # !Cargar datos y agente una sola vez
-@st.cache_resource
+
 def cargar_agente():
     df = data_limpia()  # ← carga el df aquí adentro
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-flash-lite-latest",
         google_api_key=os.getenv("GOOGLE_API_KEY"),
-        temperature=0
+        temperature=0,
+        max_output_tokens=4096 
     )
     agent = create_pandas_dataframe_agent(
         llm,
@@ -89,9 +100,11 @@ def build_chat_html(messages):
                     <div style="width:32px;height:32px;border-radius:50%;background:#1B5E20;
                         display:flex;align-items:center;justify-content:center;
                         color:white;font-size:13px;flex-shrink:0;">A</div>
-                    <div style="background:#f0f2f6;padding:10px 14px;
+                    <div class="msg-content" style="background:#f0f2f6;padding:10px 14px;
                         border-radius:0 18px 18px 18px;font-size:14px;
-                        max-width:85%;line-height:1.5;">{msg["content"]}</div>
+                        max-width:85%;line-height:1.5;">
+                        <span class="markdown-content">{msg["content"]}</span>
+                    </div>
                 </div>
             """
         else:
@@ -131,8 +144,8 @@ with col_chat:
     chat_html = build_chat_html(st.session_state.messages)
     st.session_state.scroll_counter += 1
 
-
     st.components.v1.html(f"""
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
         <style>
             .tutor-chat-box {{
                 height: 700px;
@@ -140,12 +153,42 @@ with col_chat:
                 padding: 16px;
                 font-family: sans-serif;
             }}
+            /* Estilo de tablas */
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+                margin: 8px 0;
+                font-size: 13px;
+            }}
+            th {{
+                background-color: #1B5E20;
+                color: white;
+                padding: 8px 12px;
+                text-align: left;
+            }}
+            td {{
+                padding: 6px 12px;
+                border-bottom: 1px solid #e0e0e0;
+            }}
+            tr:nth-child(even) {{
+                background-color: #f5f5f5;
+            }}
+            tr:hover {{
+                background-color: #e8f5e9;
+            }}
         </style>
         <div class="tutor-chat-box">
             {chat_html}
         </div>
         <script>
             var dummy = {st.session_state.scroll_counter};
+            
+            /* Renderiza markdown en todos los mensajes del asistente */
+            document.querySelectorAll('.markdown-content').forEach(function(el) {{
+                el.innerHTML = marked.parse(el.textContent);
+            }});
+            
+            /* Auto-scroll */
             var box = document.querySelector('.tutor-chat-box');
             if(box) box.scrollTop = box.scrollHeight;
         </script>
@@ -158,8 +201,19 @@ with col_chat:
 
         with st.spinner("Analizando..."):
             try:
-                agent = cargar_agente()  # ← simple, sin parámetros
-                respuesta = agent.run(pregunta)
+                agent = cargar_agente()
+                resultado = agent.invoke({"input": pregunta})
+                output = resultado["output"]
+                
+                # Si es lista extrae el texto
+                if isinstance(output, list):
+                    respuesta = " ".join([
+                        item["text"] for item in output 
+                        if isinstance(item, dict) and "text" in item
+                    ])
+                else:
+                    respuesta = str(output)
+                    
             except Exception as e:
                 respuesta = f"Ocurrió un error: {str(e)}"
 
