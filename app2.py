@@ -27,7 +27,7 @@ if "messages" not in st.session_state:
         * **Cliente:** Nombre del cliente
         * **Valor:** Valor en pesos colombianos (COP)
 
-        Con estos datos, puedo ayudarte a responder preguntas sobre facturación, como ventas por cliente, facturación mensual, comparaciones entre períodos, y más. ¿Qué te gustaría analizar hoy?"""}
+        ¿Qué te gustaría analizar hoy?"""}
             ]
 
 if "chat_history" not in st.session_state:
