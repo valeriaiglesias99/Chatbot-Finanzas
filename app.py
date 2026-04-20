@@ -1,4 +1,22 @@
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv() 
+
+# ← Agrega estas dos líneas
+import langchain
+langchain.debug = False
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from data import data_limpia
+from prompts import SYSTEM_PROMPT
+from langchain_experimental.agents import create_pandas_dataframe_agent
+import os
+from langchain_community.agent_toolkits.load_tools import load_tools
+
+if "cache_cleared" not in st.session_state:
+    st.cache_resource.clear()
+    st.session_state.cache_cleared = True
 
 # *Configuración inicial de la página, ocupando todo el ancho y título de la pestaña
 st.set_page_config(layout="wide", page_title="Chatbot Finanzas")
@@ -29,7 +47,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# *Pregunta: ¿ya existe "scroll_counter" en la memoria?
+# *Incializar estado
 if "scroll_counter" not in st.session_state:
     st.session_state.scroll_counter = 0
 
@@ -40,6 +58,26 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "Hola! ¿En qué te puedo ayudar hoy?"}
     ]
+
+# !Cargar datos y agente una sola vez
+@st.cache_resource
+def cargar_agente():
+    df = data_limpia()  # ← carga el df aquí adentro
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        temperature=0
+    )
+    agent = create_pandas_dataframe_agent(
+        llm,
+        df,
+        verbose=True,
+        prefix=SYSTEM_PROMPT,
+        allow_dangerous_code=True,
+        handle_parsing_errors=True,
+        agent_type="openai-tools"
+    )
+    return agent
 
 # *Chat con diseño personalizado
 def build_chat_html(messages):
@@ -116,12 +154,14 @@ with col_chat:
     # Input
     pregunta = st.chat_input("Pregunta algo...")
     if pregunta:
-        # *Guarda el mensaje del usuario
         st.session_state.messages.append({"role": "user", "content": pregunta})
 
-        # *Guarda la respuesta (falsa por ahora)
-        respuesta = "Aquí irá la respuesta por ahora.."
+        with st.spinner("Analizando..."):
+            try:
+                agent = cargar_agente()  # ← simple, sin parámetros
+                respuesta = agent.run(pregunta)
+            except Exception as e:
+                respuesta = f"Ocurrió un error: {str(e)}"
 
         st.session_state.messages.append({"role": "assistant", "content": respuesta})
-        # *Recarga la app para mostrar los nuevos mensajes
         st.rerun()
